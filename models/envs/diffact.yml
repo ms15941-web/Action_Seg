@@ -1,0 +1,16 @@
+name: diffact
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch==2.4.1
+      - numpy==1.26.4
+      - scipy==1.10.1
+      - matplotlib
+      - tensorboard
+      - tqdm
+      - opencv-contrib-python-headless==4.10.0.84
+      - huggingface_hub
+      - requests
