@@ -182,7 +182,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data_root", default=str(DEFAULT_DATA_ROOT))
     parser.add_argument("--camera", default="egocentric", choices=CAMERAS)
-    parser.add_argument("--num_seqs", type=int, default=None, help="random subset size (default: all 627)")
+    parser.add_argument("--num_seqs", type=int, default=None,
+                        help="random subset size (default: all 627); increasing it later only adds sequences")
     parser.add_argument("--seq_list", default=None, help="text file with one sequence token per line")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--short_side", type=int, default=256)
@@ -203,7 +204,9 @@ def main():
         wanted = [l.strip().replace("/", "++") for l in open(args.seq_list) if l.strip()]
         seqs = [s for s in wanted if s in set(seqs)]
     elif args.num_seqs is not None:
-        seqs = sorted(random.Random(args.seed).sample(seqs, min(args.num_seqs, len(seqs))))
+        # Fixed shuffle + prefix, so a larger --num_seqs always contains a smaller one.
+        random.Random(args.seed).shuffle(seqs)
+        seqs = sorted(seqs[: args.num_seqs])
     print(f"{len(seqs)} sequences, camera={args.camera}, data_root={data_root}")
     free_gb = shutil.disk_usage(data_root).free / 1e9
     print(f"Free disk: {free_gb:.0f} GB (expect ~40 MB per sequence at short_side=256)")
