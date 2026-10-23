@@ -15,7 +15,7 @@ import sys
 import numpy as np
 
 from oakink2_actseg.common import DIFFACT_DIR, RUNS_DIR, dataset_name, processed_root
-from oakink2_actseg.prepare import add_prepare_args, prepare_from_args
+from oakink2_actseg.prepare import add_prepare_args, prepare_from_args, require_split
 
 
 def diffact_base_params(name="params_breakfast"):
@@ -49,6 +49,7 @@ def main():
         data_dir = processed_root(args.data_root) / dataset_name(args.camera, args.fps, not args.no_trim, args.crop)
     else:
         data_dir = prepare_from_args(args)
+    require_split(data_dir, args.split)
 
     first_feature = next((data_dir / "features").glob("*.npy"))
     input_dim = int(np.load(first_feature, mmap_mode="r").shape[0])

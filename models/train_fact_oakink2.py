@@ -18,7 +18,7 @@ import numpy as np
 
 from oakink2_actseg.common import FACT_DIR, RUNS_DIR, dataset_name, processed_root
 from oakink2_actseg.labels import num_segments
-from oakink2_actseg.prepare import add_prepare_args, prepare_from_args
+from oakink2_actseg.prepare import add_prepare_args, prepare_from_args, require_split
 
 
 def import_fact_as_package(name="fact"):
@@ -99,6 +99,7 @@ def main():
         data_dir = processed_root(args.data_root) / dataset_name(args.camera, args.fps, not args.no_trim, args.crop)
     else:
         data_dir = prepare_from_args(args)
+    require_split(data_dir, args.split)
     config_path = write_fact_config(data_dir, args)
 
     import wandb

@@ -5,6 +5,7 @@
         groundTruth/<seq>.txt
         mapping.txt
         splits/{train,test}.splitK.bundle
+              (official mode: split1 = official train/test, plus val and test_* subsets)
 
 Stages: labels (CPU, seconds) -> flow (CPU, TV-L1, slow) -> features (GPU).
 Every stage skips sequences that are already done, so it is safe to re-run.
@@ -30,7 +31,15 @@ from .common import (
     processed_root,
     select_frame_ids,
 )
-from .labels import class_list, frame_labels, load_intervals, num_segments, write_dataset_labels, write_splits
+from .labels import (
+    class_list,
+    frame_labels,
+    load_intervals,
+    num_segments,
+    write_dataset_labels,
+    write_kfold_splits,
+    write_official_split,
+)
 
 STAGES = ("labels", "flow", "features")
 
@@ -44,15 +53,17 @@ def add_prepare_args(parser):
                    help="center: 224x224 centre crop (MS-TCN style); full: whole frame, global pooled")
     g.add_argument("--no_trim", action="store_true",
                    help="keep frames outside the annotated [seq_beg, seq_end] endpoints")
-    g.add_argument("--num_folds", type=int, default=5)
-    g.add_argument("--split_seed", type=int, default=0)
+    g.add_argument("--split_mode", default="official", choices=("official", "kfold"),
+                   help="official: OakInk2 train/val/test as split1; kfold: random K-fold over sequences")
+    g.add_argument("--num_folds", type=int, default=5, help="kfold mode only")
+    g.add_argument("--split_seed", type=int, default=0, help="kfold mode only")
     g.add_argument("--flow_workers", type=int, default=default_num_workers())
     g.add_argument("--i3d_batch_size", type=int, default=16)
     return parser
 
 
-def prepare(data_root, camera="egocentric", fps=15, crop="center", trim=True, num_folds=5,
-            split_seed=0, flow_workers=1, i3d_batch_size=16, stages=STAGES):
+def prepare(data_root, camera="egocentric", fps=15, crop="center", trim=True, split_mode="official",
+            num_folds=5, split_seed=0, flow_workers=1, i3d_batch_size=16, stages=STAGES):
     data_root = Path(data_root)
     out_dir = processed_root(data_root) / dataset_name(camera, fps, trim, crop)
     seqs = downloaded_sequences(data_root, camera)
@@ -80,7 +91,15 @@ def prepare(data_root, camera="egocentric", fps=15, crop="center", trim=True, nu
         if dropped:
             print(f"[prepare] skipped {dropped} sequences with <2 frames or a single segment")
         write_dataset_labels(out_dir, class_list(data_root), video_labels)
-        write_splits(out_dir, list(video_labels), num_folds, split_seed)
+        if split_mode == "official":
+            official_dir = data_root / "official_split"
+            if not (official_dir / "test.txt").exists():
+                from .download import fetch_official_split
+
+                fetch_official_split(data_root)
+            write_official_split(out_dir, data_root, official_dir, video_labels)
+        else:
+            write_kfold_splits(out_dir, list(video_labels), num_folds, split_seed)
 
     split_file = out_dir / "splits" / "videos.txt"
     if not split_file.exists():
@@ -124,10 +143,16 @@ def prepare(data_root, camera="egocentric", fps=15, crop="center", trim=True, nu
     return out_dir
 
 
+def require_split(data_dir, split):
+    if not (Path(data_dir) / "splits" / f"train.split{split}.bundle").exists():
+        header = (Path(data_dir) / "splits" / "videos.txt").read_text().split("\n")[0]
+        raise SystemExit(f"split{split} does not exist for {header} (official mode only has split1)")
+
+
 def prepare_from_args(args, stages=STAGES):
     return prepare(
         data_root=args.data_root, camera=args.camera, fps=args.fps, crop=args.crop,
-        trim=not args.no_trim, num_folds=args.num_folds, split_seed=args.split_seed,
+        trim=not args.no_trim, split_mode=args.split_mode, num_folds=args.num_folds, split_seed=args.split_seed,
         flow_workers=args.flow_workers, i3d_batch_size=args.i3d_batch_size, stages=stages,
     )
 

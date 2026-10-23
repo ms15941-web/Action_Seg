@@ -44,6 +44,10 @@ I3D_FILES = {
     "models/rgb_imagenet.pt": "https://github.com/piergiaj/pytorch-i3d/raw/master/models/rgb_imagenet.pt",
     "models/flow_imagenet.pt": "https://github.com/piergiaj/pytorch-i3d/raw/master/models/flow_imagenet.pt",
 }
+OFFICIAL_SPLIT_URL = (
+    "https://raw.githubusercontent.com/oakink/OakInk2-TaMF/"
+    "ce018173e0981fec43d1f53328e06808cf00198c/asset/split/{}.txt"
+)
 CHUNK = 1 << 20
 
 
@@ -85,6 +89,15 @@ def fetch_annotations(data_root, session):
         with tarfile.open(tar_path) as tf:
             tf.extractall(data_root)
         tar_path.unlink()
+
+
+def fetch_official_split(data_root, session=None):
+    """Sequence-level train/val/test split released with OakInk2 (OakInk2-TaMF/asset/split)."""
+    session = session or _session()
+    for name in ("train", "val", "test"):
+        dst = Path(data_root) / "official_split" / f"{name}.txt"
+        if not dst.exists():
+            _download_file(session, OFFICIAL_SPLIT_URL.format(name), dst)
 
 
 def fetch_i3d(session, i3d_dir=I3D_DIR):
@@ -196,6 +209,7 @@ def main():
     data_root.mkdir(parents=True, exist_ok=True)
     session = _session()
     fetch_annotations(data_root, session)
+    fetch_official_split(data_root, session)
     if not args.skip_i3d:
         fetch_i3d(session)
 
