@@ -130,4 +130,7 @@ def default_num_workers():
     for key in ("SLURM_CPUS_PER_TASK", "PBS_NUM_PPN", "NSLOTS"):
         if os.environ.get(key):
             return max(1, int(os.environ[key]))
+    # os.cpu_count() reports the whole node; the affinity mask is what the job may actually use.
+    if hasattr(os, "sched_getaffinity"):
+        return max(1, len(os.sched_getaffinity(0)))
     return max(1, os.cpu_count() or 1)
