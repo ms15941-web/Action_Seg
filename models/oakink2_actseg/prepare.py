@@ -64,11 +64,26 @@ def add_prepare_args(parser):
     g.add_argument("--split_seed", type=int, default=0, help="kfold mode only")
     g.add_argument("--flow_workers", type=int, default=default_num_workers())
     g.add_argument("--i3d_batch_size", type=int, default=16)
+    g.add_argument("--shard", default=None, metavar="K/N",
+                   help="flow/features stages only process every N-th video starting at K (0-based), "
+                        "e.g. from a SLURM job array; run the labels stage once beforehand")
     return parser
 
 
+def _parse_shard(shard):
+    if shard is None:
+        return 0, 1
+    k, n = (int(x) for x in str(shard).split("/"))
+    if not 0 <= k < n:
+        raise ValueError(f"--shard {shard}: need 0 <= K < N")
+    return k, n
+
+
 def prepare(data_root, camera="all", fps=15, crop="center", trim=True, split_mode="official",
-            num_folds=5, split_seed=0, flow_workers=1, i3d_batch_size=16, stages=STAGES):
+            num_folds=5, split_seed=0, flow_workers=1, i3d_batch_size=16, stages=STAGES, shard=None):
+    shard_k, shard_n = _parse_shard(shard)
+    if shard_n > 1 and "labels" in stages:
+        raise ValueError("--shard runs in parallel jobs; run the labels stage once, then shard flow/features")
     data_root = Path(data_root)
     cameras = resolve_cameras(camera)
     out_dir = processed_root(data_root) / dataset_name(cameras, fps, trim, crop)
@@ -115,7 +130,9 @@ def prepare(data_root, camera="all", fps=15, crop="center", trim=True, split_mod
     split_file = out_dir / "splits" / "videos.txt"
     if not split_file.exists():
         raise FileNotFoundError(f"{split_file} missing; run the labels stage first")
-    videos = split_file.read_text().split("\n")[1:-1]
+    videos = split_file.read_text().split("\n")[1:-1][shard_k::shard_n]
+    if shard_n > 1:
+        print(f"[prepare] shard {shard_k}/{shard_n}: {len(videos)} videos")
 
     def frames_of(v):
         seq, cam, _ = videos_meta[v]
@@ -172,7 +189,7 @@ def prepare_from_args(args, stages=STAGES):
     return prepare(
         data_root=args.data_root, camera=args.camera, fps=args.fps, crop=args.crop,
         trim=not args.no_trim, split_mode=args.split_mode, num_folds=args.num_folds, split_seed=args.split_seed,
-        flow_workers=args.flow_workers, i3d_batch_size=args.i3d_batch_size, stages=stages,
+        flow_workers=args.flow_workers, i3d_batch_size=args.i3d_batch_size, stages=stages, shard=args.shard,
     )
 
 
