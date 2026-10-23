@@ -4,6 +4,7 @@
     test_seen_task         complex task also performed in the training split
     test_unseen_task       complex task never performed in the training split
     test_unseen_primitive  contains an action class that never occurs in training
+    test_<camera>          one camera view (only when training on several views)
 
 Both models are scored with the same MS-TCN metrics (oakink2_actseg/metrics.py) from their
 saved predictions, so no GPU is needed:
@@ -19,9 +20,9 @@ import json
 import pickle
 from pathlib import Path
 
-from oakink2_actseg.common import FACT_DIR, RUNS_DIR, dataset_name, processed_root
+from oakink2_actseg.common import FACT_DIR, RUNS_DIR
 from oakink2_actseg.metrics import evaluate
-from oakink2_actseg.prepare import add_prepare_args
+from oakink2_actseg.prepare import add_prepare_args, dataset_dir_from_args
 
 SUBSETS = ("test", "test_seen_task", "test_unseen_task", "test_unseen_primitive")
 
@@ -65,12 +66,14 @@ def main():
     parser.add_argument("--fact_ckpt", default=None, help="default: newest log/<dataset>/split1/**/best_ckpt.gz")
     args = parser.parse_args()
 
-    name = dataset_name(args.camera, args.fps, not args.no_trim, args.crop)
-    data_dir = processed_root(args.data_root) / name
+    data_dir = dataset_dir_from_args(args)
+    name = data_dir.name
     split_dir = data_dir / "splits"
-    subsets = {s: read_lines(split_dir / f"{s}.split1.bundle") for s in SUBSETS if (split_dir / f"{s}.split1.bundle").exists()}
-    if len(subsets) < len(SUBSETS):
+    if not all((split_dir / f"{s}.split1.bundle").exists() for s in SUBSETS):
         raise SystemExit(f"{split_dir} has no test subsets; re-run the labels stage with --split_mode official")
+    per_view = sorted(p.name[: -len(".split1.bundle")] for p in split_dir.glob("test_*.split1.bundle")
+                      if p.name[: -len(".split1.bundle")] not in SUBSETS)
+    subsets = {s: read_lines(split_dir / f"{s}.split1.bundle") for s in (*SUBSETS, *per_view)}
     gt = {v: read_lines(data_dir / "groundTruth" / f"{v}.txt") for v in subsets["test"]}
 
     models = {}

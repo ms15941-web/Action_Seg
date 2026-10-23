@@ -14,6 +14,7 @@ Every stage skips sequences that are already done, so it is safe to re-run.
     python -m oakink2_actseg.prepare --stages features         # on a GPU node
 """
 import argparse
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +30,9 @@ from .common import (
     frames_pack_path,
     load_json,
     processed_root,
+    resolve_cameras,
     select_frame_ids,
+    video_name,
 )
 from .labels import (
     class_list,
@@ -47,7 +50,9 @@ STAGES = ("labels", "flow", "features")
 def add_prepare_args(parser):
     g = parser.add_argument_group("OakInk2 data preparation")
     g.add_argument("--data_root", default=str(DEFAULT_DATA_ROOT))
-    g.add_argument("--camera", default="egocentric", choices=CAMERAS)
+    g.add_argument("--camera", default="all",
+                   help="'all' (one training video per sequence and view) or comma-separated names from "
+                        + ",".join(CAMERAS))
     g.add_argument("--fps", type=int, default=15, help="15 matches MS-TCN; must divide 30")
     g.add_argument("--crop", default="center", choices=("center", "full"),
                    help="center: 224x224 centre crop (MS-TCN style); full: whole frame, global pooled")
@@ -62,58 +67,68 @@ def add_prepare_args(parser):
     return parser
 
 
-def prepare(data_root, camera="egocentric", fps=15, crop="center", trim=True, split_mode="official",
+def prepare(data_root, camera="all", fps=15, crop="center", trim=True, split_mode="official",
             num_folds=5, split_seed=0, flow_workers=1, i3d_batch_size=16, stages=STAGES):
     data_root = Path(data_root)
-    out_dir = processed_root(data_root) / dataset_name(camera, fps, trim, crop)
-    seqs = downloaded_sequences(data_root, camera)
-    if not seqs:
+    cameras = resolve_cameras(camera)
+    out_dir = processed_root(data_root) / dataset_name(cameras, fps, trim, crop)
+
+    # video -> (seq, camera, selected frame ids)
+    videos_meta = {}
+    for cam in cameras:
+        for seq in downloaded_sequences(data_root, cam):
+            ids = select_frame_ids(data_root, seq, load_json(frames_ids_path(data_root, cam, seq)), fps, trim)
+            if len(ids) >= 2:
+                videos_meta[video_name(seq, cam, cameras)] = (seq, cam, ids)
+    if not videos_meta:
         raise FileNotFoundError(
-            f"No downloaded {camera} frames under {data_root}/frames. "
+            f"No downloaded frames for {cameras} under {data_root}/frames. "
             f"Run `python -m oakink2_actseg.download --camera {camera}` first."
         )
-    print(f"[prepare] {len(seqs)} downloaded sequences -> {out_dir}")
-
-    frame_ids = {}
-    for seq in seqs:
-        ids = select_frame_ids(data_root, seq, load_json(frames_ids_path(data_root, camera, seq)), fps, trim)
-        if len(ids) >= 2:
-            frame_ids[seq] = ids
+    per_cam = Counter(cam for _, cam, _ in videos_meta.values())
+    print(f"[prepare] {len(videos_meta)} videos ({dict(per_cam)}) -> {out_dir}")
 
     if "labels" in stages:
-        video_labels = {}
-        for seq, ids in frame_ids.items():
-            labels = frame_labels(ids, load_intervals(data_root, seq))
+        intervals, video_labels = {}, {}
+        for v, (seq, _, ids) in videos_meta.items():
+            if seq not in intervals:
+                intervals[seq] = load_intervals(data_root, seq)
+            labels = frame_labels(ids, intervals[seq])
             # DiffAct's boundary targets need at least one action boundary per video.
             if num_segments(labels) >= 2:
-                video_labels[seq] = labels
-        dropped = len(seqs) - len(video_labels)
+                video_labels[v] = labels
+        dropped = len(videos_meta) - len(video_labels)
         if dropped:
-            print(f"[prepare] skipped {dropped} sequences with <2 frames or a single segment")
+            print(f"[prepare] skipped {dropped} videos with a single segment")
         write_dataset_labels(out_dir, class_list(data_root), video_labels)
+        split_meta = {v: videos_meta[v][:2] for v in video_labels}
         if split_mode == "official":
             official_dir = data_root / "official_split"
             if not (official_dir / "test.txt").exists():
                 from .download import fetch_official_split
 
                 fetch_official_split(data_root)
-            write_official_split(out_dir, data_root, official_dir, video_labels)
+            write_official_split(out_dir, data_root, official_dir, video_labels, split_meta)
         else:
-            write_kfold_splits(out_dir, list(video_labels), num_folds, split_seed)
+            write_kfold_splits(out_dir, split_meta, num_folds, split_seed)
 
     split_file = out_dir / "splits" / "videos.txt"
     if not split_file.exists():
         raise FileNotFoundError(f"{split_file} missing; run the labels stage first")
     videos = split_file.read_text().split("\n")[1:-1]
 
+    def frames_of(v):
+        seq, cam, _ = videos_meta[v]
+        return frames_pack_path(data_root, cam, seq)
+
+    def flow_of(v):
+        seq, cam, _ = videos_meta[v]
+        return flow_pack_path(data_root, cam, fps, trim, seq)
+
     if "flow" in stages:
         from .flow import compute_flows
 
-        jobs = [
-            (frames_pack_path(data_root, camera, v), frame_ids[v], flow_pack_path(data_root, camera, fps, trim, v))
-            for v in videos
-            if not flow_pack_path(data_root, camera, fps, trim, v).exists()
-        ]
+        jobs = [(frames_of(v), videos_meta[v][2], flow_of(v)) for v in videos if not flow_of(v).exists()]
         compute_flows(jobs, flow_workers)
 
     if "features" in stages:
@@ -121,15 +136,14 @@ def prepare(data_root, camera="egocentric", fps=15, crop="center", trim=True, sp
 
         from .i3d_features import extract_features
 
-        missing_flow = [v for v in videos if not flow_pack_path(data_root, camera, fps, trim, v).exists()]
+        missing_flow = [v for v in videos if not flow_of(v).exists()]
         if missing_flow:
-            raise FileNotFoundError(f"{len(missing_flow)} sequences have no flow yet; run the flow stage")
+            raise FileNotFoundError(f"{len(missing_flow)} videos have no flow yet; run the flow stage")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if device.type == "cpu":
             print("[prepare] WARNING: no GPU visible, I3D extraction on CPU will be very slow")
         jobs = [
-            (frames_pack_path(data_root, camera, v), flow_pack_path(data_root, camera, fps, trim, v),
-             frame_ids[v], out_dir / "features" / f"{v}.npy")
+            (frames_of(v), flow_of(v), videos_meta[v][2], out_dir / "features" / f"{v}.npy")
             for v in videos
             if not (out_dir / "features" / f"{v}.npy").exists()
         ]
@@ -147,6 +161,11 @@ def require_split(data_dir, split):
     if not (Path(data_dir) / "splits" / f"train.split{split}.bundle").exists():
         header = (Path(data_dir) / "splits" / "videos.txt").read_text().split("\n")[0]
         raise SystemExit(f"split{split} does not exist for {header} (official mode only has split1)")
+
+
+def dataset_dir_from_args(args):
+    return processed_root(args.data_root) / dataset_name(
+        resolve_cameras(args.camera), args.fps, not args.no_trim, args.crop)
 
 
 def prepare_from_args(args, stages=STAGES):

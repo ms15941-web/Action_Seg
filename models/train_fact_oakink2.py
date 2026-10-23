@@ -16,9 +16,9 @@ import sys
 
 import numpy as np
 
-from oakink2_actseg.common import FACT_DIR, RUNS_DIR, dataset_name, processed_root
+from oakink2_actseg.common import FACT_DIR, RUNS_DIR
 from oakink2_actseg.labels import num_segments
-from oakink2_actseg.prepare import add_prepare_args, prepare_from_args, require_split
+from oakink2_actseg.prepare import add_prepare_args, dataset_dir_from_args, prepare_from_args, require_split
 
 
 def import_fact_as_package(name="fact"):
@@ -96,7 +96,7 @@ def main():
     args = parser.parse_args()
 
     if args.skip_prepare:
-        data_dir = processed_root(args.data_root) / dataset_name(args.camera, args.fps, not args.no_trim, args.crop)
+        data_dir = dataset_dir_from_args(args)
     else:
         data_dir = prepare_from_args(args)
     require_split(data_dir, args.split)

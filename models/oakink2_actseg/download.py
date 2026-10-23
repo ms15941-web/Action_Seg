@@ -1,9 +1,10 @@
-"""Download OakInk2 into realdata/OakInk2, keeping a single camera view.
+"""Download OakInk2 into realdata/OakInk2.
 
-Each sequence tarball (all 4 cameras, PNG, up to ~20GB) is streamed over HTTP and
-never written to disk: only the frames of the chosen camera are kept, resized to
-`--short_side` and re-encoded as JPEG into one pack file per sequence.
+Each sequence tarball (all 4 cameras, PNG, up to ~20GB) is streamed over HTTP once and
+never written to disk: frames of the requested cameras are resized to `--short_side`,
+re-encoded as JPEG and stored as one pack file per (camera, sequence).
 
+    python -m oakink2_actseg.download                        # all 4 cameras
     python -m oakink2_actseg.download --camera egocentric
     python -m oakink2_actseg.download --num_seqs 50          # random subset for a quick test
 """
@@ -24,7 +25,6 @@ from huggingface_hub import hf_hub_url
 from tqdm import tqdm
 
 from .common import (
-    CAMERAS,
     DEFAULT_DATA_ROOT,
     HF_REPO_ID,
     I3D_DIR,
@@ -33,6 +33,7 @@ from .common import (
     frames_pack_path,
     load_json,
     load_pickle,
+    resolve_cameras,
     save_json_atomic,
     save_pickle_atomic,
 )
@@ -129,10 +130,30 @@ def _resize_short_side(img, short_side):
     return cv2.resize(img, size, interpolation=cv2.INTER_AREA)
 
 
-def _stream_camera_frames(session, seq, serial, expected_ids, short_side, jpeg_quality):
-    frames = {}
+def _save_camera(data_root, seq, camera, serial, frames, short_side):
+    if not frames:
+        raise RuntimeError(f"no frames found for {camera} (serial {serial})")
+    ids = sorted(frames)
+    save_pickle_atomic(
+        {"seq": seq, "camera": camera, "serial": serial, "short_side": short_side,
+         "frame_ids": ids, "jpgs": [frames[i] for i in ids]},
+        frames_pack_path(data_root, camera, seq),
+    )
+    save_json_atomic(ids, frames_ids_path(data_root, camera, seq))
+    return len(ids)
+
+
+def _stream_cameras(data_root, session, seq, serial_to_camera, expected_ids, short_side, jpeg_quality):
+    """Single pass over the sequence tarball; each camera is saved as soon as it is complete."""
+    frames = {serial: {} for serial in serial_to_camera}
+    counts = {}
     expected = set(expected_ids)
     encode_args = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+
+    def finish(serial):
+        cam = serial_to_camera[serial]
+        counts[cam] = _save_camera(data_root, seq, cam, serial, frames.pop(serial), short_side)
+
     with session.get(_url(f"data/{seq}.tar"), stream=True, timeout=120) as r:
         r.raise_for_status()
         r.raw.decode_content = True
@@ -141,8 +162,9 @@ def _stream_camera_frames(session, seq, serial, expected_ids, short_side, jpeg_q
                 if not member.isfile():
                     continue
                 parts = member.name.strip("/").split("/")
-                if len(parts) < 2 or parts[-2] != serial:
+                if len(parts) < 2 or parts[-2] not in frames:
                     continue
+                serial = parts[-2]
                 stem = Path(parts[-1]).stem
                 if not stem.isdigit():
                     continue
@@ -153,38 +175,38 @@ def _stream_camera_frames(session, seq, serial, expected_ids, short_side, jpeg_q
                 img = _resize_short_side(img, short_side)
                 ok, enc = cv2.imencode(".jpg", img, encode_args)
                 assert ok
-                frames[int(stem)] = enc.tobytes()
-                # Frames of one camera are stored contiguously; stop once all are in.
-                if expected and expected.issubset(frames.keys()):
-                    break
-    return frames
+                frames[serial][int(stem)] = enc.tobytes()
+                # Frames of one camera are stored contiguously in the tarball.
+                if expected and expected.issubset(frames[serial].keys()):
+                    finish(serial)
+                    if not frames:
+                        break
+    for serial in list(frames):
+        finish(serial)
+    return counts
 
 
-def download_sequence(data_root, seq, camera, short_side, jpeg_quality, retries=3):
+def _is_downloaded(data_root, camera, seq):
+    return frames_ids_path(data_root, camera, seq).exists() and frames_pack_path(data_root, camera, seq).exists()
+
+
+def download_sequence(data_root, seq, cameras, short_side, jpeg_quality, retries=3):
     data_root = Path(data_root)
-    if frames_ids_path(data_root, camera, seq).exists() and frames_pack_path(data_root, camera, seq).exists():
+    if all(_is_downloaded(data_root, c, seq) for c in cameras):
         return seq, "skip"
     session = _session()
     cam_def_path = data_root / "cam_def" / f"{seq}.json"
     cache = {seq: load_json(cam_def_path)} if cam_def_path.exists() else {}
     expected_ids = load_pickle(data_root / "program_extension" / "frame_id" / f"{seq}.pkl")["frame_id_list"]
-    last_err = None
+    done, last_err = {}, None
     for attempt in range(retries):
         try:
-            serial = _camera_serial(session, seq, camera, cache)
+            todo = [c for c in cameras if not _is_downloaded(data_root, c, seq)]
+            serial_to_camera = {_camera_serial(session, seq, c, cache): c for c in todo}
             save_json_atomic(cache[seq], cam_def_path)
-            frames = _stream_camera_frames(session, seq, serial, expected_ids, short_side, jpeg_quality)
-            if not frames:
-                raise RuntimeError(f"no frames found for camera serial {serial}")
-            ids = sorted(frames)
-            save_pickle_atomic(
-                {"seq": seq, "camera": camera, "serial": serial, "short_side": short_side,
-                 "frame_ids": ids, "jpgs": [frames[i] for i in ids]},
-                frames_pack_path(data_root, camera, seq),
-            )
-            save_json_atomic(ids, frames_ids_path(data_root, camera, seq))
-            missing = len(set(expected_ids) - set(ids))
-            return seq, f"ok ({len(ids)} frames" + (f", {missing} missing)" if missing else ")")
+            done.update(_stream_cameras(data_root, session, seq, serial_to_camera, expected_ids,
+                                        short_side, jpeg_quality))
+            return seq, "ok (" + ", ".join(f"{c} {n}" for c, n in done.items()) + " frames)"
         except Exception as e:  # network hiccups on multi-GB streams are common
             last_err = e
             time.sleep(10 * (attempt + 1))
@@ -194,7 +216,8 @@ def download_sequence(data_root, seq, camera, short_side, jpeg_quality, retries=
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data_root", default=str(DEFAULT_DATA_ROOT))
-    parser.add_argument("--camera", default="egocentric", choices=CAMERAS)
+    parser.add_argument("--camera", default="all",
+                        help="'all' or comma-separated names: egocentric,allocentric_top,allocentric_left,allocentric_right")
     parser.add_argument("--num_seqs", type=int, default=None,
                         help="random subset size (default: all 627); increasing it later only adds sequences")
     parser.add_argument("--seq_list", default=None, help="text file with one sequence token per line")
@@ -221,14 +244,15 @@ def main():
         # Fixed shuffle + prefix, so a larger --num_seqs always contains a smaller one.
         random.Random(args.seed).shuffle(seqs)
         seqs = sorted(seqs[: args.num_seqs])
-    print(f"{len(seqs)} sequences, camera={args.camera}, data_root={data_root}")
+    cameras = resolve_cameras(args.camera)
+    print(f"{len(seqs)} sequences, cameras={cameras}, data_root={data_root}")
     free_gb = shutil.disk_usage(data_root).free / 1e9
-    print(f"Free disk: {free_gb:.0f} GB (expect ~40 MB per sequence at short_side=256)")
+    print(f"Free disk: {free_gb:.0f} GB (expect ~40 MB per sequence and camera at short_side=256)")
 
     failed = []
     with ProcessPoolExecutor(args.workers) as ex:
         futures = [
-            ex.submit(download_sequence, data_root, s, args.camera, args.short_side, args.jpeg_quality)
+            ex.submit(download_sequence, data_root, s, cameras, args.short_side, args.jpeg_quality)
             for s in seqs
         ]
         for fut in tqdm(as_completed(futures), total=len(futures)):

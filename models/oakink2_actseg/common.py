@@ -76,12 +76,35 @@ def downloaded_sequences(data_root, camera):
     )
 
 
+def resolve_cameras(camera):
+    """'all' or a comma-separated list -> camera names in canonical order."""
+    names = CAMERAS if camera == "all" else [c.strip() for c in camera.split(",") if c.strip()]
+    unknown = sorted(set(names) - set(CAMERAS))
+    if unknown or not names:
+        raise ValueError(f"unknown camera(s) {unknown}; choose from {CAMERAS} or 'all'")
+    return [c for c in CAMERAS if c in names]
+
+
+def camera_tag(cameras):
+    if len(cameras) == 1:
+        return cameras[0]
+    return "allviews" if len(cameras) == len(CAMERAS) else "+".join(cameras)
+
+
+VIEW_SEP = "@"
+
+
+def video_name(seq, camera, cameras):
+    """One training video per (sequence, camera); single-camera datasets keep plain sequence names."""
+    return seq if len(cameras) == 1 else f"{seq}{VIEW_SEP}{camera}"
+
+
 def sampling_tag(camera, fps, trim):
     return f"{camera}_{fps}fps" + ("" if trim else "_untrimmed")
 
 
-def dataset_name(camera, fps, trim, crop):
-    return f"oakink2_{sampling_tag(camera, fps, trim)}_{crop}"
+def dataset_name(cameras, fps, trim, crop):
+    return f"oakink2_{camera_tag(cameras)}_{fps}fps" + ("" if trim else "_untrimmed") + f"_{crop}"
 
 
 def processed_root(data_root):
