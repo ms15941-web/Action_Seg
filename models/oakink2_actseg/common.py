@@ -19,6 +19,11 @@ BACKGROUND = "background"
 TRANSIENT_PRIMITIVES = ("hold", "rearrange", "swap")
 IGNORED_PRIMITIVES = ("?(unk)",)
 
+# Per-hand functional primitives (labels v4 from motion capture), see oakink2_synth/README.md.
+DEFAULT_PRIM5_DIR = MODELS_DIR / "oakink2_synth"
+PRIM5_CLASSES = ("idle", "reach", "reposition", "transport", "stabilize")
+HANDS = ("left", "right")
+
 
 def save_pickle_atomic(obj, path):
     path = Path(path)
@@ -105,6 +110,11 @@ def sampling_tag(camera, fps, trim):
 
 def dataset_name(cameras, fps, trim, crop):
     return f"oakink2_{camera_tag(cameras)}_{fps}fps" + ("" if trim else "_untrimmed") + f"_{crop}"
+
+
+def prim5_dataset_name(base_name, hand):
+    """Per-hand five-primitive dataset that shares the base dataset's features."""
+    return f"{base_name}_prim5_{hand}"
 
 
 def processed_root(data_root):

@@ -12,7 +12,8 @@ saved predictions, so no GPU is needed:
     FACT:    log/<dataset>/split1/**/best_ckpt.gz  (FACT keeps the checkpoint with the best test F1@50)
 
     conda activate fact
-    python eval_oakink2_subsets.py
+    python eval_oakink2_subsets.py --hand right                 # five per-hand primitives
+    python eval_oakink2_subsets.py --label_source program       # 70 OakInk2 primitives
 """
 import argparse
 import gzip

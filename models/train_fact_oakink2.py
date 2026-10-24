@@ -5,7 +5,8 @@ done), generates a FACT yaml from its Breakfast config (same statistics as
 FACT/utils/gen_config.py), then runs FACT's train.py.
 
     conda activate fact
-    python train_fact_oakink2.py --split 1
+    python train_fact_oakink2.py --hand right --split 1             # five per-hand primitives
+    python train_fact_oakink2.py --label_source program             # 70 OakInk2 primitives
 """
 import argparse
 import importlib.util
@@ -16,9 +17,15 @@ import sys
 
 import numpy as np
 
-from oakink2_actseg.common import FACT_DIR, RUNS_DIR
+from oakink2_actseg.common import BACKGROUND, FACT_DIR, RUNS_DIR
 from oakink2_actseg.labels import num_segments
-from oakink2_actseg.prepare import add_prepare_args, dataset_dir_from_args, prepare_from_args, require_split
+from oakink2_actseg.prepare import (
+    add_prepare_args,
+    dataset_dir_from_args,
+    prepare_from_args,
+    require_split,
+    require_training_labels,
+)
 
 
 def import_fact_as_package(name="fact"):
@@ -57,8 +64,15 @@ def write_fact_config(data_dir, args):
     cfg.split_path = str(data_dir / "splits")
     cfg.map_fname = str(data_dir / "mapping.txt")
     cfg.feature_transpose = True  # features are stored (D, T) for DiffAct
-    cfg.bg_class = 0
-    cfg.eval_bg = False  # exclude background from Acc/Edit/F1
+    classes = [l.split(" ", 1)[1] for l in (data_dir / "mapping.txt").read_text().split("\n") if l]
+    if BACKGROUND in classes:
+        cfg.bg_class = classes.index(BACKGROUND)
+        cfg.eval_bg = False  # exclude background from Acc/Edit/F1
+    else:
+        # FACT needs some bg_class; with bgw=1 and eval_bg it changes neither the loss nor the metrics.
+        cfg.bg_class = 0
+        cfg.Loss.bgw = 1.0
+        cfg.eval_bg = True
     cfg.average_transcript_len = avg_len
     cfg.FACT.ntoken = args.ntoken or int(math.ceil(max_len * args.token_ratio))
     cfg.Loss.match = args.match
@@ -94,6 +108,7 @@ def main():
     parser.add_argument("--gpu", type=int, default=0, help="index among visible GPUs")
     parser.add_argument("--wandb", default="disabled", choices=("disabled", "offline", "online"))
     args = parser.parse_args()
+    require_training_labels(args)
 
     if args.skip_prepare:
         data_dir = dataset_dir_from_args(args)

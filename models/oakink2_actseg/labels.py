@@ -1,4 +1,6 @@
 import ast
+import bisect
+import json
 import random
 import re
 from pathlib import Path
@@ -39,12 +41,50 @@ def frame_labels(frame_ids, intervals):
     return labels.tolist()
 
 
+def load_prim5_records(prim5_dir):
+    """{sequence token: record} from oakink2_synth/{train,val,test}_labels.jsonl."""
+    records = {}
+    for split in ("train", "val", "test"):
+        path = Path(prim5_dir) / f"{split}_labels.jsonl"
+        if not path.exists():
+            raise FileNotFoundError(f"{path} missing; copy oakink2_synth/*_labels.jsonl to {prim5_dir}")
+        for line in open(path):
+            rec = json.loads(line)
+            records[rec["oakink2_name"].replace("/", "++")] = rec
+    return records
+
+
+def prim5_frame_labels(all_image_ids, seq_beg, frame_ids, record, hand):
+    """Labels of one hand at the given image frame ids, plus how many frames sit more than
+    one label step away from the nearest labelled step.
+
+    frames_30fps counts 30 fps frames from the first image at or after the endpoint seq_beg
+    (1-based), not from the start of the recording; checked against program_info on all 627
+    sequences."""
+    beg = bisect.bisect_left(all_image_ids, seq_beg)
+    index_of = {fid: i for i, fid in enumerate(all_image_ids)}
+    steps, labels = record["frames_30fps"], record["labels"][hand]
+    out, far = [], 0
+    for fid in frame_ids:
+        f = index_of[fid] - beg + 1
+        k = bisect.bisect_left(steps, f)
+        if k == len(steps) or (k > 0 and f - steps[k - 1] <= steps[k] - f):
+            k -= 1
+        k = max(k, 0)
+        far += abs(steps[k] - f) > 3
+        out.append(labels[k])
+    return out, far
+
+
 def num_segments(labels):
     return 1 + sum(a != b for a, b in zip(labels[:-1], labels[1:]))
 
 
 def write_dataset_labels(out_dir, classes, video_labels):
     out_dir = Path(out_dir)
+    for old in (out_dir / "groundTruth").glob("*.txt") if (out_dir / "groundTruth").is_dir() else []:
+        if old.stem not in video_labels:
+            old.unlink()
     gt_dir = out_dir / "groundTruth"
     gt_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "mapping.txt", "w") as f:

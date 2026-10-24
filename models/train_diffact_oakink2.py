@@ -4,7 +4,8 @@ Prepares realdata/OakInk2 (labels, TV-L1 flow, I3D features; skipped when alread
 done), writes a DiffAct config based on its Breakfast setting, then runs DiffAct/main.py.
 
     conda activate diffact
-    python train_diffact_oakink2.py --split 1
+    python train_diffact_oakink2.py --hand right --split 1          # five per-hand primitives
+    python train_diffact_oakink2.py --label_source program          # 70 OakInk2 primitives
 """
 import argparse
 import ast
@@ -15,7 +16,13 @@ import sys
 import numpy as np
 
 from oakink2_actseg.common import DIFFACT_DIR, RUNS_DIR
-from oakink2_actseg.prepare import add_prepare_args, dataset_dir_from_args, prepare_from_args, require_split
+from oakink2_actseg.prepare import (
+    add_prepare_args,
+    dataset_dir_from_args,
+    prepare_from_args,
+    require_split,
+    require_training_labels,
+)
 
 
 def diffact_base_params(name="params_breakfast"):
@@ -44,6 +51,7 @@ def main():
                         help="GPU index; -1 keeps CUDA_VISIBLE_DEVICES as set by the scheduler")
     parser.add_argument("--naming", default=None)
     args = parser.parse_args()
+    require_training_labels(args)
 
     if args.skip_prepare:
         data_dir = dataset_dir_from_args(args)
