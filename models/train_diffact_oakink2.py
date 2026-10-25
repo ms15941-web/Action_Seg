@@ -12,6 +12,7 @@ import ast
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -50,12 +51,17 @@ def main():
     parser.add_argument("--device", type=int, default=-1,
                         help="GPU index; -1 keeps CUDA_VISIBLE_DEVICES as set by the scheduler")
     parser.add_argument("--naming", default=None)
+    parser.add_argument("--data_dir", default=None,
+                        help="train on an already prepared dataset folder (e.g. from oakink2_actseg.synth)")
     args = parser.parse_args()
-    require_training_labels(args)
 
-    if args.skip_prepare:
+    if args.data_dir:
+        data_dir = Path(args.data_dir).resolve()
+    elif args.skip_prepare:
+        require_training_labels(args)
         data_dir = dataset_dir_from_args(args)
     else:
+        require_training_labels(args)
         data_dir = prepare_from_args(args)
     require_split(data_dir, args.split)
 

@@ -14,6 +14,7 @@ import math
 import os
 import runpy
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -107,12 +108,17 @@ def main():
     parser.add_argument("--eval_every_epochs", type=int, default=5)
     parser.add_argument("--gpu", type=int, default=0, help="index among visible GPUs")
     parser.add_argument("--wandb", default="disabled", choices=("disabled", "offline", "online"))
+    parser.add_argument("--data_dir", default=None,
+                        help="train on an already prepared dataset folder (e.g. from oakink2_actseg.synth)")
     args = parser.parse_args()
-    require_training_labels(args)
 
-    if args.skip_prepare:
+    if args.data_dir:
+        data_dir = Path(args.data_dir).resolve()
+    elif args.skip_prepare:
+        require_training_labels(args)
         data_dir = dataset_dir_from_args(args)
     else:
+        require_training_labels(args)
         data_dir = prepare_from_args(args)
     require_split(data_dir, args.split)
     config_path = write_fact_config(data_dir, args)
