@@ -53,6 +53,8 @@ def main():
     parser.add_argument("--naming", default=None)
     parser.add_argument("--data_dir", default=None,
                         help="train on an already prepared dataset folder (e.g. from oakink2_actseg.synth)")
+    parser.add_argument("--init_from", default=None,
+                        help="DiffAct latest.pt to continue training from (weights and optimizer, epoch reset to 0)")
     args = parser.parse_args()
 
     if args.data_dir:
@@ -88,6 +90,17 @@ def main():
     config_path.write_text(json.dumps(params, indent=2))
     print(f"[diffact] config: {config_path}")
     print(f"[diffact] results: {RUNS_DIR / 'diffact' / naming}")
+
+    resume = RUNS_DIR / "diffact" / naming / "latest.pt"
+    if args.init_from and not resume.exists():
+        import torch
+
+        # DiffAct resumes from latest.pt; restart the epoch/step counters so the new run trains in full.
+        state = torch.load(args.init_from, map_location="cpu")
+        state.update(epoch=-1, step=1)
+        resume.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(state, resume)
+        print(f"[diffact] initialised from {args.init_from}")
 
     cmd = [sys.executable, "main.py", "--config", str(config_path), "--device", str(args.device)]
     sys.exit(subprocess.call(cmd, cwd=DIFFACT_DIR))

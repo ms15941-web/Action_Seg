@@ -13,6 +13,7 @@ saved predictions, so no GPU is needed:
 
     conda activate fact
     python eval_oakink2_subsets.py --hand right                 # five per-hand primitives
+    python eval_oakink2_subsets.py --hand right --compare       # real vs real+synth vs synth
     python eval_oakink2_subsets.py --label_source program       # 70 OakInk2 primitives
 """
 import argparse
@@ -60,14 +61,41 @@ def latest(paths):
     return paths[-1] if paths else None
 
 
+def model_sources(dataset, diffact_run=None, fact_ckpt=None):
+    """(label, kind, path) for the DiffAct / FACT outputs of one training dataset name."""
+    diffact_run = Path(diffact_run) if diffact_run else RUNS_DIR / "diffact" / f"{dataset}-S1"
+    fact_ckpt = Path(fact_ckpt) if fact_ckpt else latest(
+        (FACT_DIR.parent / "log" / dataset / "split1").glob("**/best_ckpt.gz"))
+    return [("DiffAct", "diffact", diffact_run), ("FACT", "fact", fact_ckpt)]
+
+
+def comparison_sources(hand, real_tag):
+    from oakink2_actseg.combine import combined_name
+
+    snap = RUNS_DIR / "snapshots" / real_tag
+    out = []
+    for setting, kw in (
+        ("real", dict(dataset="", diffact_run=snap / "diffact" / hand, fact_ckpt=snap / "fact" / hand / "best_ckpt.gz")),
+        ("real+synth", dict(dataset=combined_name("real+synth", hand))),
+        ("synth", dict(dataset=combined_name("synth", hand))),
+    ):
+        out += [(f"{label}/{setting}", kind, path) for label, kind, path in model_sources(**kw)]
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_prepare_args(parser)
     parser.add_argument("--diffact_run", default=None, help="default: runs/diffact/<dataset>-S1")
     parser.add_argument("--fact_ckpt", default=None, help="default: newest log/<dataset>/split1/**/best_ckpt.gz")
+    parser.add_argument("--data_dir", default=None,
+                        help="dataset folder whose test split, subsets and ground truth to use")
+    parser.add_argument("--compare", action="store_true",
+                        help="score real (snapshot), real+synth and synth models of --hand on the real test set")
+    parser.add_argument("--real_tag", default="real", help="snapshot holding the real-only models")
     args = parser.parse_args()
 
-    data_dir = dataset_dir_from_args(args)
+    data_dir = Path(args.data_dir) if args.data_dir else dataset_dir_from_args(args)
     name = data_dir.name
     split_dir = data_dir / "splits"
     if not all((split_dir / f"{s}.split1.bundle").exists() for s in SUBSETS):
@@ -77,35 +105,39 @@ def main():
     subsets = {s: read_lines(split_dir / f"{s}.split1.bundle") for s in (*SUBSETS, *per_view)}
     gt = {v: read_lines(data_dir / "groundTruth" / f"{v}.txt") for v in subsets["test"]}
 
+    sources = (comparison_sources(args.hand, args.real_tag) if args.compare
+               else model_sources(name, args.diffact_run, args.fact_ckpt))
     models = {}
-    diffact_run = Path(args.diffact_run) if args.diffact_run else RUNS_DIR / "diffact" / f"{name}-S1"
-    if (diffact_run / "prediction").is_dir():
-        models["DiffAct"] = (diffact_run, diffact_predictions(diffact_run, subsets["test"]))
-    fact_ckpt = Path(args.fact_ckpt) if args.fact_ckpt else latest(
-        (FACT_DIR.parent / "log" / name / "split1").glob("**/best_ckpt.gz"))
-    if fact_ckpt is not None and fact_ckpt.exists():
-        models["FACT"] = (fact_ckpt, fact_predictions(fact_ckpt, data_dir))
+    for label, kind, path in sources:
+        if kind == "diffact" and path is not None and (path / "prediction").is_dir():
+            models[label] = (path, diffact_predictions(path, subsets["test"]))
+        elif kind == "fact" and path is not None and path.exists():
+            models[label] = (path, fact_predictions(path, data_dir))
+        else:
+            print(f"(skipping {label}: nothing found at {path})")
     if not models:
-        raise SystemExit(f"no DiffAct predictions in {diffact_run} and no FACT best_ckpt.gz under log/{name}")
+        raise SystemExit("no model outputs found")
 
     results = {}
-    header = f"{'model':8s} {'subset':22s} {'#vid':>5s} " + " ".join(f"{m:>7s}" for m in ("Acc", "Edit", "F1@10", "F1@25", "F1@50"))
+    width = max(8, max(len(k) for k in models))
+    header = f"{'model':{width}s} {'subset':22s} {'#vid':>5s} " + " ".join(
+        f"{m:>7s}" for m in ("Acc", "Edit", "F1@10", "F1@25", "F1@50"))
     print(header)
     print("-" * len(header))
     for model, (source, pred) in models.items():
         results[model] = {"source": str(source)}
         for subset, videos in subsets.items():
             if not videos:
-                print(f"{model:8s} {subset:22s} {0:5d}  (empty)")
+                print(f"{model:{width}s} {subset:22s} {0:5d}  (empty)")
                 continue
             missing = [v for v in videos if v not in pred]
             if missing:
                 raise SystemExit(f"{model}: {len(missing)} {subset} videos have no prediction in {source}")
             m = evaluate(gt, pred, videos)
             results[model][subset] = {"num_videos": len(videos), **m}
-            print(f"{model:8s} {subset:22s} {len(videos):5d} " + " ".join(f"{x:7.1f}" for x in m.values()))
+            print(f"{model:{width}s} {subset:22s} {len(videos):5d} " + " ".join(f"{x:7.1f}" for x in m.values()))
 
-    out = RUNS_DIR / f"subset_eval_{name}.json"
+    out = RUNS_DIR / (f"compare_{name}.json" if args.compare else f"subset_eval_{name}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=2))
     print(f"\nsaved {out}")

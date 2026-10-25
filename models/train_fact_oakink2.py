@@ -10,9 +10,11 @@ FACT/utils/gen_config.py), then runs FACT's train.py.
 """
 import argparse
 import importlib.util
+import json
 import math
 import os
 import runpy
+import shutil
 import sys
 from pathlib import Path
 
@@ -56,6 +58,9 @@ def write_fact_config(data_dir, args):
         cfg = CfgNode.load_cfg(f)
 
     avg_len, max_len = transcript_stats(data_dir, args.match)
+    if args.ntoken is not None and args.ntoken < max_len:
+        raise SystemExit(f"ntoken {args.ntoken} < {max_len} segments in the longest video: FACT needs at least "
+                         "one action token per segment, so this checkpoint cannot be continued on this dataset")
     n_train = len((data_dir / "splits" / f"train.split{args.split}.bundle").read_text().split())
     steps_per_epoch = math.ceil(n_train / (args.batch_size or cfg.batch_size))
 
@@ -110,6 +115,8 @@ def main():
     parser.add_argument("--wandb", default="disabled", choices=("disabled", "offline", "online"))
     parser.add_argument("--data_dir", default=None,
                         help="train on an already prepared dataset folder (e.g. from oakink2_actseg.synth)")
+    parser.add_argument("--init_from", default=None,
+                        help="FACT ckpts/network.iter-N.net to continue training from (fresh optimizer, epoch 0)")
     args = parser.parse_args()
 
     if args.data_dir:
@@ -121,6 +128,12 @@ def main():
         require_training_labels(args)
         data_dir = prepare_from_args(args)
     require_split(data_dir, args.split)
+    if args.init_from and args.ntoken is None:
+        saved = Path(args.init_from).resolve().parent.parent / "args.json"
+        if saved.exists():
+            # The token count sets parameter shapes, so it must match the checkpoint.
+            args.ntoken = int(json.loads(saved.read_text())["FACT"]["ntoken"])
+            print(f"[fact] ntoken {args.ntoken} taken from {saved}")
     config_path = write_fact_config(data_dir, args)
 
     import wandb
@@ -131,8 +144,18 @@ def main():
 
     package = import_fact_as_package()
     print(f"[fact] logs: {FACT_DIR.parent / 'log' / data_dir.name}")
-    sys.argv = ["train.py", "--cfg", str(config_path), "--set",
-                "aux.gpu", str(args.gpu), "split", f"split{args.split}"]
+    set_cfgs = ["aux.gpu", str(args.gpu), "split", f"split{args.split}"]
+    if args.init_from:
+        from fact.configs.utils import setup_cfg
+
+        ckptdir = FACT_DIR.parent / setup_cfg([str(config_path)], list(set_cfgs)).aux.logdir / "ckpts"
+        if not any(ckptdir.glob("network.iter-*.net")):
+            # FACT resumes the newest ckpts/network.iter-N.net and starts at epoch N // steps_per_epoch;
+            # naming the initial weights iter-1 makes the new run start from epoch 0.
+            ckptdir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(args.init_from, ckptdir / "network.iter-1.net")
+            print(f"[fact] initialised from {args.init_from}")
+    sys.argv = ["train.py", "--cfg", str(config_path), "--set", *set_cfgs]
     runpy.run_module(f"{package}.train", run_name="__main__", alter_sys=True)
 
 

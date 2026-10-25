@@ -10,6 +10,7 @@ resized to 224x224 (a 21-frame window around every frame, as for the real videos
         processed/oakink2synth_10fps[_rgb]/videos.json, features/<stem>@<hand>.npy
         processed/oakink2synth_10fps[_rgb]_prim5_{left,right}/
             groundTruth/, mapping.txt, splits/, features -> ../oakink2synth_10fps[_rgb]/features
+    (<stem> has dots replaced by underscores, e.g. ...00049-00199_r1@left)
 
 All synthetic videos come from OakInk2's official train split, so split1 here only holds out
 about 10 % of the sequences (by seq_id, so overlapping windows never straddle the split) to
@@ -85,6 +86,23 @@ def _held_out(seq_id, percent):
     return int(hashlib.md5(seq_id.encode()).hexdigest(), 16) % 100 < percent
 
 
+def video_id(stem, hand):
+    # DiffAct reads video names with split('.')[0], so ids must not contain dots (e.g. ".r1").
+    return f"{stem.replace('.', '_')}@{hand}"
+
+
+def _migrate_dotted_names(out_root, base_dir, meta):
+    """Rename flow / feature files written under the earlier dotted ids."""
+    for v, m in meta.items():
+        old = f"{Path(m['video']).stem}@{m['hand']}"
+        if old == v:
+            continue
+        for folder, ext in ((Path(out_root) / "flow", ".pkl"), (base_dir / "features", ".npy")):
+            src, dst = folder / f"{old}{ext}", folder / f"{v}{ext}"
+            if src.exists() and not dst.exists():
+                os.replace(src, dst)
+
+
 # ---------------------------------------------------------------- labels
 
 def build_labels(synth_dir, out_root, rgb_only, holdout_percent):
@@ -100,7 +118,7 @@ def build_labels(synth_dir, out_root, rgb_only, holdout_percent):
             if num_segments(labels) < 2:
                 stats[f"{hand} single-segment skipped"] += 1
                 continue
-            v = f"{stem}@{hand}"
+            v = video_id(stem, hand)
             per_hand[hand][v] = labels
             meta[v] = {"video": r["video"], "hand": hand, "seq_id": r["seq_id"], "n_frames": len(labels)}
     save_json_atomic(meta, base_dir / "videos.json")
@@ -215,6 +233,8 @@ def run(synth_dir=DEFAULT_PRIM5_DIR, out_root=DEFAULT_OUT_ROOT, stages=STAGES, r
     if not (base_dir / "videos.json").exists():
         raise FileNotFoundError(f"{base_dir / 'videos.json'} missing; run --stages labels first")
     meta = load_json(base_dir / "videos.json")
+    if "labels" in stages:
+        _migrate_dotted_names(out_root, base_dir, meta)
     videos = sorted(meta)[shard_k::shard_n][:limit]
     flow_of = lambda v: out_root / "flow" / f"{v}.pkl"
 
