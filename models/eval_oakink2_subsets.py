@@ -1,4 +1,4 @@
-"""Score trained DiffAct / FACT models on the official OakInk2 test split and its subsets:
+"""Score trained DiffAct / FACT / MS-TCN models on the official OakInk2 test split and its subsets:
 
     test                   all official test videos
     test_seen_task         complex task also performed in the training split
@@ -10,6 +10,7 @@ Both models are scored with the same MS-TCN metrics (oakink2_actseg/metrics.py) 
 saved predictions, so no GPU is needed:
     DiffAct: runs/diffact/<name>/prediction/*.txt  (written at its most recent evaluation epoch)
     FACT:    log/<dataset>/split1/**/best_ckpt.gz  (FACT keeps the checkpoint with the best test F1@50)
+    MS-TCN:  runs/mstcn/<name>/results/*         (last epoch, as in ms-tcn)
 
     conda activate fact
     python eval_oakink2_subsets.py --hand right                 # five per-hand primitives
@@ -38,6 +39,11 @@ def diffact_predictions(run_dir, videos):
     return {v: (pred_dir / f"{v}.txt").read_text().split("\n")[1].split() for v in videos}
 
 
+def mstcn_predictions(run_dir, videos):
+    pred_dir = Path(run_dir) / "results"
+    return {v: (pred_dir / v).read_text().split("\n")[1].split() for v in videos if (pred_dir / v).exists()}
+
+
 def fact_predictions(ckpt_path, data_dir):
     from train_fact_oakink2 import import_fact_as_package
 
@@ -61,12 +67,13 @@ def latest(paths):
     return paths[-1] if paths else None
 
 
-def model_sources(dataset, diffact_run=None, fact_ckpt=None):
-    """(label, kind, path) for the DiffAct / FACT outputs of one training dataset name."""
+def model_sources(dataset, diffact_run=None, fact_ckpt=None, mstcn_run=None):
+    """(label, kind, path) for the DiffAct / FACT / MS-TCN outputs of one training dataset name."""
     diffact_run = Path(diffact_run) if diffact_run else RUNS_DIR / "diffact" / f"{dataset}-S1"
     fact_ckpt = Path(fact_ckpt) if fact_ckpt else latest(
         (FACT_DIR.parent / "log" / dataset / "split1").glob("**/best_ckpt.gz"))
-    return [("DiffAct", "diffact", diffact_run), ("FACT", "fact", fact_ckpt)]
+    mstcn_run = Path(mstcn_run) if mstcn_run else RUNS_DIR / "mstcn" / f"{dataset}-S1"
+    return [("DiffAct", "diffact", diffact_run), ("FACT", "fact", fact_ckpt), ("MS-TCN", "mstcn", mstcn_run)]
 
 
 def comparison_sources(hand, real_tag):
@@ -75,7 +82,8 @@ def comparison_sources(hand, real_tag):
     snap = RUNS_DIR / "snapshots" / real_tag
     out = []
     for setting, kw in (
-        ("real", dict(dataset="", diffact_run=snap / "diffact" / hand, fact_ckpt=snap / "fact" / hand / "best_ckpt.gz")),
+        ("real", dict(dataset="", diffact_run=snap / "diffact" / hand,
+                      fact_ckpt=snap / "fact" / hand / "best_ckpt.gz", mstcn_run=snap / "mstcn" / hand)),
         ("real+synth", dict(dataset=combined_name("real+synth", hand))),
         ("synth", dict(dataset=combined_name("synth", hand))),
     ):
@@ -113,6 +121,8 @@ def main():
             models[label] = (path, diffact_predictions(path, subsets["test"]))
         elif kind == "fact" and path is not None and path.exists():
             models[label] = (path, fact_predictions(path, data_dir))
+        elif kind == "mstcn" and path is not None and (path / "results").is_dir():
+            models[label] = (path, mstcn_predictions(path, subsets["test"]))
         else:
             print(f"(skipping {label}: nothing found at {path})")
     if not models:

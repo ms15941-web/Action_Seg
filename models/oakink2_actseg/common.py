@@ -8,6 +8,7 @@ DEFAULT_DATA_ROOT = MODELS_DIR / "realdata" / "OakInk2"
 I3D_DIR = MODELS_DIR / "third_party" / "pytorch-i3d"
 DIFFACT_DIR = MODELS_DIR / "DiffAct"
 FACT_DIR = MODELS_DIR / "CVPR2024-FACT-main"
+MSTCN_DIR = MODELS_DIR / "ms-tcn"
 RUNS_DIR = MODELS_DIR / "runs"
 
 HF_REPO_ID = "kelvin34501/OakInk-v2"
