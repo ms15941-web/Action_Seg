@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OakInk2 action segmentation viewer</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --text:#1f2328; --muted:#667085; --bad:#d92d20; --good:#12b76a; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; font:14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; gap:16px; align-items:center; padding:10px 18px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:16px; margin:0 8px 0 0; font-weight:600; }
+  header label { color:var(--muted); }
+  select, input { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; }
+  .tabs button { font:inherit; border:1px solid var(--line); background:#fff; padding:5px 14px; border-radius:6px; cursor:pointer; }
+  .tabs button.on { background:var(--text); color:#fff; border-color:var(--text); }
+  main { display:grid; grid-template-columns:340px 1fr; gap:14px; padding:14px; }
+  main.figs { display:block; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  #list { height:calc(100vh - 92px); overflow:auto; padding:0; }
+  #list .controls { padding:10px 12px; border-bottom:1px solid var(--line); display:grid; gap:6px; position:sticky; top:0; background:var(--card); }
+  #list .item { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
+  #list .item:hover { background:#f2f4f7; }
+  #list .item.on { background:#eef4ff; }
+  #list .item .t { font-weight:500; }
+  #list .item .s { color:var(--muted); font-size:12px; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:10px; background:#e8f5ee; color:#05603a; font-size:12px; margin-right:4px; }
+  .pill.warn { background:#fef3f2; color:#b42318; }
+  #detail { display:grid; gap:12px; align-content:start; min-width:0; }
+  #title { font-size:15px; font-weight:600; }
+  #sub { color:var(--muted); font-size:12px; }
+  video { width:100%; max-height:46vh; background:#000; border-radius:8px; }
+  #timeline { width:100%; display:block; cursor:crosshair; }
+  #legend span { display:inline-flex; align-items:center; gap:5px; margin-right:14px; font-size:12px; }
+  #legend i { width:12px; height:12px; border-radius:3px; display:inline-block; }
+  #now { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:6px; }
+  #now div { border:1px solid var(--line); border-radius:6px; padding:5px 8px; font-size:12px; }
+  #now b { display:block; font-weight:500; color:var(--muted); font-size:11px; }
+  #now .bad { border-color:var(--bad); }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th, td { border-bottom:1px solid var(--line); padding:4px 8px; text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:500; }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:12px; }
+  .grid img { width:100%; border:1px solid var(--line); border-radius:8px; cursor:zoom-in; background:#fff; }
+  .grid figcaption { font-size:12px; color:var(--muted); margin-top:2px; word-break:break-all; }
+  h2 { font-size:14px; margin:18px 0 8px; }
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.75); display:none; align-items:center; justify-content:center; z-index:10; cursor:zoom-out; }
+  #modal img { max-width:96vw; max-height:94vh; background:#fff; border-radius:6px; }
+  #tip { position:fixed; pointer-events:none; background:#101828; color:#fff; padding:3px 7px; border-radius:5px; font-size:12px; display:none; z-index:6; }
+  .muted { color:var(--muted); }
+  @media (max-width: 900px) { main { grid-template-columns:1fr; } #list { height:40vh; } .row2 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>OakInk2 segmentation viewer</h1>
+  <label>analysis <select id="analysis" aria-label="analysis folder"></select></label>
+  <span class="tabs"><button id="tabVideos" class="on">Videos</button> <button id="tabFigures">Figures</button></span>
+</header>
+<main id="videosView">
+  <section id="list" class="card" aria-label="test videos">
+    <div class="controls">
+      <input id="search" placeholder="filter: task, sequence or camera" aria-label="filter videos">
+      <label class="muted">sort by <select id="sortModel" aria-label="sort model"></select>
+        <select id="sortKey" aria-label="sort metric"><option>Edit</option><option>AER</option><option>Acc</option><option>count_err</option></select></label>
+      <label class="muted"><input type="checkbox" id="onlyClips"> only videos with a clip</label>
+      <span id="count" class="muted"></span>
+    </div>
+    <div id="items"></div>
+  </section>
+  <section id="detail">
+    <div class="card">
+      <div id="title">Pick a video on the left</div>
+      <div id="sub"></div>
+    </div>
+    <div class="card" id="videoCard" hidden><video id="video" controls preload="auto" playsinline></video></div>
+    <div class="card" id="timelineCard" hidden>
+      <canvas id="timeline" role="img" aria-label="gold and predicted primitive timelines"></canvas>
+      <div id="legend"></div>
+      <div class="muted" style="font-size:12px;margin-top:4px">Thin red strips mark frames where a model disagrees with gold. Click the timeline to jump; arrow keys step one frame.</div>
+    </div>
+    <div class="card" id="nowCard" hidden><div id="nowHead" class="muted" style="margin-bottom:6px"></div><div id="now"></div></div>
+    <div class="row2" id="tablesCard" hidden>
+      <div class="card"><table id="metricsTable"></table></div>
+      <div class="card"><table id="countsTable"></table></div>
+    </div>
+    <div class="card" id="pngCard" hidden><img id="png" style="width:100%" alt="timeline figure"></div>
+  </section>
+</main>
+<main id="figuresView" class="figs" hidden></main>
+<div id="modal"><img alt="enlarged figure"></div>
+<div id="tip"></div>
+<script>
+const $ = id => document.getElementById(id);
+const state = { index: null, analysis: null, data: null, video: null, frames: null, cursor: 0 };
+const file = p => "/files/" + p.split("/").map(encodeURIComponent).join("/");
+
+async function init() {
+  state.index = await (await fetch("/api/index")).json();
+  const sel = $("analysis");
+  for (const a of state.index.analyses) sel.add(new Option(a.name + (a.viewer ? "" : " (figures only)"), a.name));
+  if (!state.index.analyses.length) sel.add(new Option("no analysis folder found", ""));
+  sel.onchange = () => loadAnalysis(sel.value);
+  $("tabVideos").onclick = () => showTab("videos");
+  $("tabFigures").onclick = () => showTab("figures");
+  for (const id of ["search", "sortModel", "sortKey", "onlyClips"]) $(id).oninput = renderList;
+  $("modal").onclick = () => ($("modal").style.display = "none");
+  window.onresize = () => drawTimeline();
+  document.onkeydown = e => {
+    if (!state.video || ["INPUT", "SELECT"].includes(document.activeElement.tagName)) return;
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") { e.preventDefault(); seekFrame(state.cursor + (e.key === "ArrowRight" ? 1 : -1)); }
+    if (e.key === " ") { e.preventDefault(); const v = $("video"); if (!$("videoCard").hidden) v.paused ? v.play() : v.pause(); }
+  };
+  $("video").ontimeupdate = () => { if (!$("video").seeking) setCursor(Math.floor($("video").currentTime * state.data.fps + 1e-3)); };
+  $("video").onseeked = $("video").onpause = $("video").ontimeupdate;
+  requestAnimationFrame(tick);
+  if (state.index.analyses.length) loadAnalysis(state.index.analyses[0].name);
+  renderFigures();
+}
+
+function tick() {
+  const v = $("video");
+  if (state.data && !v.paused && !$("videoCard").hidden) setCursor(Math.floor(v.currentTime * state.data.fps + 1e-3));
+  requestAnimationFrame(tick);
+}
+
+function showTab(name) {
+  $("videosView").hidden = name !== "videos";
+  $("figuresView").hidden = name !== "figures";
+  $("tabVideos").classList.toggle("on", name === "videos");
+  $("tabFigures").classList.toggle("on", name === "figures");
+}
+
+async function loadAnalysis(name) {
+  state.analysis = state.index.analyses.find(a => a.name === name);
+  state.data = null; state.video = null;
+  if (state.analysis && state.analysis.viewer) state.data = await (await fetch(file(name + "/viewer.json"))).json();
+  const sm = $("sortModel"); sm.innerHTML = "";
+  for (const m of state.data ? state.data.models : []) sm.add(new Option(m, m));
+  if (state.data && state.data.models.includes("DiffAct/real")) sm.value = "DiffAct/real";
+  renderList(); renderFigures(); clearDetail();
+}
+
+function clearDetail() {
+  $("title").textContent = state.data ? "Pick a video on the left" :
+    "This folder has no viewer.json: re-run analyze_oakink2_predictions.py to get interactive timelines and clips. The saved timeline figures are listed on the left.";
+  $("sub").textContent = "";
+  for (const id of ["videoCard", "timelineCard", "nowCard", "tablesCard", "pngCard"]) $(id).hidden = true;
+}
+
+function renderList() {
+  const box = $("items"); box.innerHTML = "";
+  const q = $("search").value.trim().toLowerCase();
+  if (!state.data) {
+    const pngs = state.analysis ? state.analysis.timelines : [];
+    for (const p of pngs) {
+      const div = document.createElement("div"); div.className = "item";
+      div.innerHTML = `<div class="t">${p.split("/").pop().replace(".png", "")}</div>`;
+      div.onclick = () => { clearDetail(); $("title").textContent = p.split("/").pop(); $("png").src = file(p); $("pngCard").hidden = false; markOn(div); };
+      box.append(div);
+    }
+    $("count").textContent = `${pngs.length} saved timeline figures`;
+    return;
+  }
+  const model = $("sortModel").value, key = $("sortKey").value;
+  let vids = Object.entries(state.data.videos).filter(([v, d]) => (!q || (v + " " + d.title).toLowerCase().includes(q)) && (!$("onlyClips").checked || d.clip));
+  const dir = key === "AER" || key === "count_err" ? -1 : 1;
+  vids.sort((a, b) => dir * ((a[1].metrics[model] || {})[key] - (b[1].metrics[model] || {})[key]));
+  $("count").textContent = `${vids.length} videos, worst first by ${model} ${key}`;
+  for (const [v, d] of vids) {
+    const m = d.metrics[model] || {};
+    const div = document.createElement("div"); div.className = "item" + (state.video === v ? " on" : "");
+    div.innerHTML = `<div class="t">${d.clip ? "&#9654; " : ""}${esc(d.title.split("   ")[0] || v)}</div>
+      <div class="s">${esc(v.split("@")[1] || "")} &middot; ${(d.n_frames / state.data.fps).toFixed(0)} s</div>
+      <div class="s"><span class="pill">Edit ${fmt(m.Edit, 1)}</span><span class="pill">AER ${fmt(m.AER, 2)}</span><span class="pill">Acc ${fmt(m.Acc, 1)}</span></div>`;
+    div.onclick = () => { markOn(div); openVideo(v); };
+    box.append(div);
+  }
+}
+
+function markOn(div) { for (const x of document.querySelectorAll("#items .item")) x.classList.remove("on"); div.classList.add("on"); }
+const fmt = (x, d) => (x === undefined || x === null || isNaN(x)) ? "-" : Number(x).toFixed(d);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function decode(segs, n) {
+  const a = new Int8Array(n).fill(-1);
+  for (const [c, s, e] of segs) a.fill(c, s, e);
+  return a;
+}
+
+function openVideo(v) {
+  state.video = v;
+  const d = state.data.videos[v];
+  state.frames = Object.fromEntries(Object.entries(d.tracks).map(([k, segs]) => [k, decode(segs, d.n_frames)]));
+  $("title").textContent = d.title.split("   ")[0] || v;
+  $("sub").textContent = v + "  |  " + (d.title.split("   ")[1] || "");
+  const vid = $("video");
+  $("videoCard").hidden = !d.clip;
+  if (d.clip) { vid.src = file(state.analysis.name + "/" + d.clip); vid.load(); } else { vid.removeAttribute("src"); vid.load(); }
+  for (const id of ["timelineCard", "nowCard", "tablesCard"]) $(id).hidden = false;
+  $("pngCard").hidden = true;
+  $("legend").innerHTML = state.data.classes.map((c, i) => `<span><i style="background:${state.data.colors[i]}"></i>${c}</span>`).join("");
+  renderTables(d);
+  setCursor(0);
+}
+
+function renderTables(d) {
+  const models = state.data.models;
+  let h = "<tr><th>model</th><th>Acc</th><th>Edit</th><th>AER</th><th>count err</th><th>#seg (gold)</th></tr>";
+  for (const m of models) {
+    const x = d.metrics[m];
+    h += `<tr><td>${m}</td><td>${fmt(x.Acc, 1)}</td><td>${fmt(x.Edit, 1)}</td><td>${fmt(x.AER, 2)}</td><td>${fmt(x.count_err, 2)}</td><td>${x.n_pred} (${x.n_gold})</td></tr>`;
+  }
+  $("metricsTable").innerHTML = h;
+  const cls = state.data.classes;
+  h = "<tr><th>segments</th>" + cls.map(c => `<th>${c}</th>`).join("") + "</tr>";
+  for (const [k, segs] of Object.entries(d.tracks)) {
+    const cnt = cls.map((_, i) => segs.filter(s => s[0] === i).length);
+    const gold = cls.map((_, i) => d.tracks.GOLD.filter(s => s[0] === i).length);
+    h += `<tr><td>${k}</td>` + cnt.map((n, i) => `<td style="${k !== "GOLD" && n !== gold[i] ? "color:var(--bad)" : ""}">${n}</td>`).join("") + "</tr>";
+  }
+  $("countsTable").innerHTML = h;
+}
+
+const LABEL_W = 132, ROW_H = 18, ERR_H = 3, GAP = 6, AXIS_H = 22;
+
+function drawTimeline() {
+  if (!state.video) return;
+  const d = state.data.videos[state.video], c = $("timeline");
+  const tracks = Object.keys(d.tracks);
+  const w = c.parentElement.clientWidth - 28, h = tracks.length * (ROW_H + ERR_H + GAP) + AXIS_H;
+  const dpr = window.devicePixelRatio || 1;
+  c.width = w * dpr; c.height = h * dpr; c.style.height = h + "px";
+  const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const n = d.n_frames, X = f => LABEL_W + (w - LABEL_W - 4) * f / n;
+  g.font = "12px -apple-system, Helvetica, Arial"; g.textBaseline = "middle";
+  tracks.forEach((k, r) => {
+    const y = r * (ROW_H + ERR_H + GAP);
+    g.fillStyle = "#1f2328"; g.fillText(k, 0, y + ROW_H / 2);
+    for (const [ci, s, e] of d.tracks[k]) { g.fillStyle = state.data.colors[ci]; g.fillRect(X(s), y, Math.max(X(e) - X(s), 0.5), ROW_H); }
+    if (k !== "GOLD") {
+      const p = state.frames[k], gt = state.frames.GOLD;
+      g.fillStyle = "#d92d20";
+      let s = -1;
+      for (let f = 0; f <= n; f++) {
+        const bad = f < n && p[f] !== gt[f];
+        if (bad && s < 0) s = f;
+        if (!bad && s >= 0) { g.fillRect(X(s), y + ROW_H + 1, Math.max(X(f) - X(s), 0.5), ERR_H); s = -1; }
+      }
+    }
+  });
+  const yAxis = tracks.length * (ROW_H + ERR_H + GAP);
+  g.fillStyle = "#667085"; g.strokeStyle = "#d0d5dd";
+  const secs = n / state.data.fps, step = secs > 120 ? 20 : secs > 60 ? 10 : secs > 20 ? 5 : 2;
+  for (let t = 0; t <= secs; t += step) { const x = X(t * state.data.fps); g.beginPath(); g.moveTo(x, yAxis); g.lineTo(x, yAxis + 4); g.stroke(); g.fillText(t + "s", x - 6, yAxis + 13); }
+  const x = X(state.cursor + 0.5);
+  g.strokeStyle = "#101828"; g.lineWidth = 2; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, yAxis); g.stroke(); g.lineWidth = 1;
+  c.onclick = e => { const f = Math.floor((e.offsetX - LABEL_W) / (w - LABEL_W - 4) * n); if (f >= 0) seekFrame(f); };
+  c.onmousemove = e => {
+    const f = Math.floor((e.offsetX - LABEL_W) / (w - LABEL_W - 4) * n), r = Math.floor(e.offsetY / (ROW_H + ERR_H + GAP));
+    if (f < 0 || f >= n || r >= tracks.length) { $("tip").style.display = "none"; return; }
+    const lab = state.frames[tracks[r]][f];
+    Object.assign($("tip").style, { display: "block", left: e.clientX + 12 + "px", top: e.clientY + 12 + "px" });
+    $("tip").textContent = `${tracks[r]} | ${(f / state.data.fps).toFixed(2)} s | ${lab >= 0 ? state.data.classes[lab] : "-"}`;
+  };
+  c.onmouseleave = () => ($("tip").style.display = "none");
+}
+
+function seekFrame(f) {
+  const d = state.data.videos[state.video];
+  f = Math.max(0, Math.min(d.n_frames - 1, f));
+  if (!$("videoCard").hidden) $("video").currentTime = (f + 0.5) / state.data.fps;
+  setCursor(f);
+}
+
+function setCursor(f) {
+  if (!state.video) return;
+  const d = state.data.videos[state.video];
+  f = Math.max(0, Math.min(d.n_frames - 1, f));
+  if (f === state.cursor && $("timeline").dataset.v === state.video) return;
+  state.cursor = f; $("timeline").dataset.v = state.video;
+  drawTimeline();
+  const gold = state.frames.GOLD[f], cls = state.data.classes, col = state.data.colors;
+  $("nowHead").textContent = `frame ${f} / ${d.n_frames - 1}  (${(f / state.data.fps).toFixed(2)} s)`;
+  $("now").innerHTML = Object.keys(d.tracks).map(k => {
+    const c = state.frames[k][f], ok = k === "GOLD" || c === gold;
+    return `<div class="${ok ? "" : "bad"}"><b>${k}</b><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${col[c] || "#fff"}"></i> ${c >= 0 ? cls[c] : "-"} ${k === "GOLD" ? "" : ok ? "&#10003;" : "&#10007;"}</div>`;
+  }).join("");
+}
+
+function renderFigures() {
+  const view = $("figuresView"); view.innerHTML = "";
+  const section = (title, paths) => {
+    if (!paths.length) return;
+    const h = document.createElement("h2"); h.textContent = title; view.append(h);
+    const grid = document.createElement("div"); grid.className = "grid";
+    for (const p of paths) {
+      const fig = document.createElement("figure"); fig.style.margin = 0;
+      fig.innerHTML = `<img loading="lazy" src="${file(p)}" alt="${esc(p)}"><figcaption>${esc(p)}</figcaption>`;
+      fig.querySelector("img").onclick = () => { $("modal").querySelector("img").src = file(p); $("modal").style.display = "flex"; };
+      grid.append(fig);
+    }
+    view.append(grid);
+  };
+  if (!state.index) return;
+  section("Comparison figures", state.index.figures);
+  if (state.analysis) {
+    section(`Analysis: ${state.analysis.name}`, state.analysis.figures);
+    section(`Timeline figures: ${state.analysis.name}`, state.analysis.timelines);
+  }
+}
+
+init();
+</script>
+</body>
+</html>

@@ -16,12 +16,16 @@ Writes runs/analysis/<hand>/:
     5_boundaries.png       distance from each gold boundary to the nearest predicted boundary (CDF)
     6_per_video.png        distribution of per-video Edit and action error rate
     per_video_metrics.csv  every video x model: Acc, Edit, AER, count error, #segments
+    viewer.json            gold and predicted segments plus metrics of every test video (for view_oakink2_analysis.py)
+    clips/*.mp4            the test frames of the timeline videos, frame k = label k (needs imageio-ffmpeg)
 
 Per-video metrics: Edit = MS-TCN segmental edit score; AER = Levenshtein(gold, pred segment
 sequence) / #gold segments (StrokeRehab); count error = sum_c |#pred_c - #gold_c| / #gold segments.
 """
 import argparse
 import csv
+import functools
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -33,7 +37,15 @@ import numpy as np
 from matplotlib.patches import Patch
 
 import eval_oakink2_subsets as E
-from oakink2_actseg.common import DEFAULT_DATA_ROOT, RUNS_DIR, load_json
+from oakink2_actseg.common import (
+    DEFAULT_DATA_ROOT,
+    RUNS_DIR,
+    frames_ids_path,
+    frames_pack_path,
+    load_json,
+    load_pickle,
+    select_frame_ids,
+)
 from oakink2_actseg.prepare import add_prepare_args, dataset_dir_from_args
 
 CLASS_COLORS = {"stabilize": "#8b5cc4", "transport": "#d9822b", "reach": "#2f6f8f",
@@ -136,10 +148,15 @@ def load_models(args, data_dir, test_videos):
 
 # ---------------------------------------------------------------- figures
 
+@functools.lru_cache(maxsize=None)
+def task_targets(data_root):
+    path = Path(data_root) / "program" / "task_target.json"
+    return load_json(path) if path.exists() else {}
+
+
 def video_title(video, data_root, fps, n_frames, hand):
     seq, _, cam = video.partition("@")
-    tasks = data_root / "program" / "task_target.json"
-    task = load_json(tasks).get(seq.replace("++", "/"), "") if tasks.exists() else ""
+    task = task_targets(str(data_root)).get(seq.replace("++", "/"), "")
     return f"{task or seq}   {seq.split('++')[-1][:18]} | {cam or 'single view'} | {hand} hand | {n_frames / fps:.0f} s"
 
 
@@ -323,6 +340,63 @@ def plot_per_video(metrics, out):
     plt.close(fig)
 
 
+# ---------------------------------------------------------------- viewer export
+
+def safe_name(video):
+    return video.replace("++", "_").replace("@", "__")
+
+
+def export_clip(video, data_root, fps, n_frames, out_path):
+    """Test frames of one video as H.264 mp4, so that frame k shows label k."""
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return "imageio-ffmpeg is not installed (pip install imageio-ffmpeg)"
+    import cv2
+
+    seq, _, cam = video.partition("@")
+    pack_path = frames_pack_path(data_root, cam, seq)
+    if not pack_path.exists():
+        return f"no frames at {pack_path}"
+    ids = select_frame_ids(data_root, seq, load_json(frames_ids_path(data_root, cam, seq)), int(fps), True)
+    if len(ids) != n_frames:
+        return f"{len(ids)} frames vs {n_frames} labels"
+    try:
+        pack = load_pickle(pack_path)
+    except Exception as e:
+        return f"cannot read {pack_path}: {e!r}"
+    jpg_of = dict(zip(pack["frame_ids"], pack["jpgs"]))
+    first = cv2.imdecode(np.frombuffer(jpg_of[ids[0]], np.uint8), cv2.IMREAD_COLOR)
+    h, w = first.shape[:2]
+    writer = imageio_ffmpeg.write_frames(str(out_path), (w - w % 2, h - h % 2), fps=fps, codec="libx264",
+                                         pix_fmt_in="rgb24", macro_block_size=2, quality=7,
+                                         output_params=["-movflags", "+faststart"])
+    writer.send(None)
+    for fid in ids:
+        img = cv2.imdecode(np.frombuffer(jpg_of[fid], np.uint8), cv2.IMREAD_COLOR)[: h - h % 2, : w - w % 2, ::-1]
+        writer.send(np.ascontiguousarray(img).tobytes())
+    writer.close()
+    return None
+
+
+def export_viewer(out, test_videos, gt_all, preds, metrics, data_root, fps, hand, clips):
+    classes = list(CLASS_ORDER)
+    idx = {c: i for i, c in enumerate(classes)}
+    encode = lambda labels: [[idx[c], s, e] for c, s, e in segments(labels)]
+    videos = {}
+    for v in test_videos:
+        videos[v] = {
+            "title": video_title(v, data_root, fps, len(gt_all[v]), hand),
+            "n_frames": len(gt_all[v]),
+            "tracks": {"GOLD": encode(gt_all[v]), **{n: encode(p[v]) for n, p in preds.items()}},
+            "metrics": {n: {k: round(float(x), 3) for k, x in metrics[n][v].items()} for n in preds},
+            "clip": clips.get(v),
+        }
+    viewer = {"hand": hand, "fps": fps, "classes": classes, "colors": [CLASS_COLORS[c] for c in classes],
+              "models": list(preds), "videos": videos}
+    (out / "viewer.json").write_text(json.dumps(viewer, separators=(",", ":")))
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -336,6 +410,7 @@ def main():
     parser.add_argument("--reference", default="DiffAct/real", help="model whose per-video Edit picks the examples")
     parser.add_argument("--video_fps", type=float, default=15, help="frame rate of the test labels")
     parser.add_argument("--out", default=None, help="default: runs/analysis/<hand>")
+    parser.add_argument("--no_clips", action="store_true", help="do not export mp4 clips of the timeline videos")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir) if args.data_dir else dataset_dir_from_args(args)
@@ -369,11 +444,22 @@ def main():
         picks = np.linspace(0, len(ranked) - 1, min(args.n_examples, len(ranked))).round().astype(int)
         chosen = [ranked[i] for i in dict.fromkeys(picks)]
     data_root = Path(args.data_root) if args.data_root else DEFAULT_DATA_ROOT
+    clips = {}
     for rank, v in enumerate(chosen):
         title = video_title(v, data_root, args.video_fps, len(gt_all[v]), args.hand or "")
         name = f"{rank:02d}_{ref.replace('/', '-')}_edit{metrics[ref][v]['Edit']:.0f}_{v.replace('++', '_').replace('@', '_')[:70]}.png"
         plot_timeline(v, gt_all[v], preds, metrics, args.video_fps, title, out / "timelines" / name)
-    print(f"saved 6 figures, {len(chosen)} timelines and per_video_metrics.csv to {out}")
+        if not args.no_clips:
+            (out / "clips").mkdir(exist_ok=True)
+            clip = out / "clips" / f"{safe_name(v)}.mp4"
+            problem = None if clip.exists() else export_clip(v, data_root, args.video_fps, len(gt_all[v]), clip)
+            if problem:
+                print(f"(no clip for {v}: {problem})")
+            else:
+                clips[v] = f"clips/{clip.name}"
+    export_viewer(out, test_videos, gt_all, preds, metrics, data_root, args.video_fps, args.hand or "", clips)
+    print(f"saved 6 figures, {len(chosen)} timelines ({len(clips)} with clips), per_video_metrics.csv and "
+          f"viewer.json to {out}")
 
 
 if __name__ == "__main__":
