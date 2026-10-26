@@ -53,7 +53,7 @@ def fact_predictions(ckpt_path, data_dir):
     index2label = {int(l.split(" ", 1)[0]): l.split(" ", 1)[1] for l in read_lines(data_dir / "mapping.txt")}
     with gzip.open(ckpt_path, "rb") as f:
         ckpt = pickle.load(f)
-    print(f"(FACT {ckpt_path}: checkpoint with the best test F1@50 is from iteration {ckpt.iteration})")
+    print(f"(FACT {ckpt_path}: predictions from iteration {ckpt.iteration})")
     preds = {}
     for name, video in ckpt.videos.items():
         labels = getattr(video, "pred_label", None)
@@ -102,6 +102,9 @@ def main():
     parser.add_argument("--compare", action="store_true",
                         help="score real (snapshot), real+synth and synth models of --hand on the real test set")
     parser.add_argument("--real_tag", default="real", help="snapshot holding the real-only models")
+    parser.add_argument("--fact_select", default="best", choices=("best", "last"),
+                        help="FACT: best = best_ckpt.gz (best test F1@50 during training, FACT's default); "
+                             "last = its last evaluation (saves/<largest iteration>.gz), like DiffAct and MS-TCN")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir) if args.data_dir else dataset_dir_from_args(args)
@@ -122,6 +125,9 @@ def main():
         if kind == "diffact" and path is not None and (path / "prediction").is_dir():
             pred = diffact_predictions(path, [v for v in subsets["test"] if (path / "prediction" / f"{v}.txt").exists()])
         elif kind == "fact" and path is not None and path.exists():
+            if args.fact_select == "last":
+                saves = list((path.parent / "saves").glob("*.gz"))
+                path = max(saves, key=lambda p: int(p.stem)) if saves else path
             pred = fact_predictions(path, data_dir)
         elif kind == "mstcn" and path is not None and (path / "results").is_dir():
             pred = mstcn_predictions(path, subsets["test"])
@@ -155,7 +161,8 @@ def main():
             results[model][subset] = {"num_videos": len(videos), **m}
             print(f"{model:{width}s} {subset:22s} {len(videos):5d} " + " ".join(f"{x:7.1f}" for x in m.values()))
 
-    out = RUNS_DIR / (f"compare_{name}.json" if args.compare else f"subset_eval_{name}.json")
+    suffix = "_factlast" if args.fact_select == "last" else ""
+    out = RUNS_DIR / (f"compare_{name}{suffix}.json" if args.compare else f"subset_eval_{name}{suffix}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=2))
     print(f"\nsaved {out}")
