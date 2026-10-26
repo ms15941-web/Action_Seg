@@ -53,6 +53,7 @@ def fact_predictions(ckpt_path, data_dir):
     index2label = {int(l.split(" ", 1)[0]): l.split(" ", 1)[1] for l in read_lines(data_dir / "mapping.txt")}
     with gzip.open(ckpt_path, "rb") as f:
         ckpt = pickle.load(f)
+    print(f"(FACT {ckpt_path}: checkpoint with the best test F1@50 is from iteration {ckpt.iteration})")
     preds = {}
     for name, video in ckpt.videos.items():
         labels = getattr(video, "pred_label", None)
@@ -117,14 +118,21 @@ def main():
                else model_sources(name, args.diffact_run, args.fact_ckpt))
     models = {}
     for label, kind, path in sources:
+        pred = None
         if kind == "diffact" and path is not None and (path / "prediction").is_dir():
-            models[label] = (path, diffact_predictions(path, subsets["test"]))
+            pred = diffact_predictions(path, [v for v in subsets["test"] if (path / "prediction" / f"{v}.txt").exists()])
         elif kind == "fact" and path is not None and path.exists():
-            models[label] = (path, fact_predictions(path, data_dir))
+            pred = fact_predictions(path, data_dir)
         elif kind == "mstcn" and path is not None and (path / "results").is_dir():
-            models[label] = (path, mstcn_predictions(path, subsets["test"]))
-        else:
+            pred = mstcn_predictions(path, subsets["test"])
+        missing = [v for v in subsets["test"] if pred is not None and v not in pred]
+        if pred is None:
             print(f"(skipping {label}: nothing found at {path})")
+        elif missing:
+            print(f"(skipping {label}: {len(missing)}/{len(subsets['test'])} test videos have no prediction yet "
+                  f"in {path}, the run is probably still training)")
+        else:
+            models[label] = (path, pred)
     if not models:
         raise SystemExit("no model outputs found")
 
